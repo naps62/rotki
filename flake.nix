@@ -16,78 +16,54 @@
           inherit system overlays;
         };
 
-        # Python dependencies
+        # Python with required version
         python = pkgs.python311;
-        pythonPackages = python.pkgs;
-
+        
         # Rust toolchain
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
           extensions = [ "rust-src" "rustfmt" "clippy" ];
         };
 
-        # Node.js and pnpm
-        nodejs = pkgs.nodejs_22;
-        pnpm = pkgs.pnpm;
+        # Python environment with available dependencies
+        rotki-python-env = python.withPackages (ps: with ps; [
+          # Core dependencies available in nixpkgs
+          gevent
+          greenlet
+          requests
+          urllib3
+          jsonschema
+          beautifulsoup4
+          cryptography
+          flask
+          flask-cors
+          marshmallow
+          werkzeug
+          packaging
+          pyjwt
+          google-api-python-client
+          google-auth
+          setuptools
+          setuptools-scm
+          wheel
+          pip
+          # Ethereum/crypto dependencies
+          eth-utils
+          eth-abi
+          eth-account
+          eth-typing
+          coincurve
+          # Additional required dependencies
+          more-itertools
+          regex
+          filetype
+          maxminddb
+          # Development tools
+          pytest
+          mypy
+          pylint
+        ]);
 
-        # Python backend derivation
-        rotkehlchen-backend = pythonPackages.buildPythonPackage rec {
-          pname = "rotkehlchen";
-          version = "1.39.1";
-          
-          src = ./.;
-          
-          format = "pyproject";
-          
-          nativeBuildInputs = with pythonPackages; [
-            setuptools
-            setuptools-scm
-            wheel
-          ];
-          
-          propagatedBuildInputs = with pythonPackages; [
-            gevent
-            greenlet
-            gevent-websocket
-            web3
-            eth-account
-            eth-typing
-            requests
-            urllib3
-            coincurve
-            jsonschema
-            beautifulsoup4
-            cryptography
-            flask
-            flask-cors
-            marshmallow
-            webargs
-            werkzeug
-            packaging
-            pyjwt
-            google-api-python-client
-            google-auth
-            polars
-            # Add other dependencies as needed
-          ];
-          
-          buildInputs = with pkgs; [
-            sqlite
-            openssl
-            libffi
-          ];
-          
-          # Skip tests during build
-          doCheck = false;
-          
-          meta = with pkgs.lib; {
-            description = "Accounting, asset management and tax report helper for cryptocurrencies";
-            homepage = "https://rotki.com";
-            license = licenses.agpl3Only;
-            maintainers = [ ];
-          };
-        };
-
-        # Rust Colibri service derivation
+        # Colibri Rust service
         colibri = pkgs.rustPlatform.buildRustPackage rec {
           pname = "colibri";
           version = "0.1.0";
@@ -108,32 +84,34 @@
             sqlite
           ];
           
-          # Environment variables for build
           OPENSSL_NO_VENDOR = 1;
+          
+          # Skip tests during build
+          doCheck = false;
           
           meta = with pkgs.lib; {
             description = "Colibri - Performance-critical Rust service for Rotki";
+            homepage = "https://rotki.com";
             license = licenses.agpl3Only;
-            maintainers = [ ];
           };
         };
 
-        # Frontend derivation
-        rotki-frontend = pkgs.stdenv.mkDerivation rec {
-          pname = "rotki-frontend";
+        # Frontend Electron app
+        rotki-electron = pkgs.stdenv.mkDerivation rec {
+          pname = "rotki-electron";
           version = "1.39.1";
           
-          src = ./frontend;
+          src = ./frontend/app;
           
           nativeBuildInputs = with pkgs; [
-            nodejs
+            nodejs_22
             pnpm
             python3
+            pkg-config
+            makeWrapper
           ];
           
           buildInputs = with pkgs; [
-            # Required for node-gyp and native dependencies
-            pkg-config
             cairo
             pango
             libpng
@@ -141,76 +119,209 @@
             giflib
             librsvg
             pixman
+            electron
           ];
           
-          configurePhase = ''
+          buildPhase = ''
             export HOME=$TMPDIR
-            export PNPM_HOME=$TMPDIR/.pnpm
-            export PATH=$PNPM_HOME:$PATH
+            export npm_config_cache=$TMPDIR/.npm
+            export ELECTRON_CACHE=$TMPDIR/.electron
+            export ELECTRON_BUILDER_CACHE=$TMPDIR/.electron-builder
             
             # Install dependencies
+            cd ..
             pnpm install --frozen-lockfile
-          '';
-          
-          buildPhase = ''
+            
+            # Build the app
             cd app
             pnpm run build
+            
+            # Create a simple electron wrapper
+            mkdir -p electron-dist
+            cp -r dist electron-dist/
+            
+            # Create package.json for electron
+            cat > electron-dist/package.json << 'EOF'
+            {
+              "name": "rotki",
+              "version": "1.39.1",
+              "main": "main.js",
+              "scripts": {
+                "start": "electron ."
+              }
+            }
+            EOF
+            
+            # Create main.js for electron
+            cat > electron-dist/main.js << 'EOF'
+            const { app, BrowserWindow } = require('electron');
+            const path = require('path');
+            
+            function createWindow() {
+              const win = new BrowserWindow({
+                width: 1200,
+                height: 800,
+                webPreferences: {
+                  nodeIntegration: true,
+                  contextIsolation: false
+                }
+              });
+              
+              win.loadFile('dist/index.html');
+            }
+            
+            app.whenReady().then(createWindow);
+            
+            app.on('window-all-closed', () => {
+              if (process.platform !== 'darwin') {
+                app.quit();
+              }
+            });
+            
+            app.on('activate', () => {
+              if (BrowserWindow.getAllWindows().length === 0) {
+                createWindow();
+              }
+            });
+            EOF
           '';
           
           installPhase = ''
-            mkdir -p $out
-            cp -r app/dist/* $out/
+            mkdir -p $out/lib/rotki-electron
+            cp -r electron-dist/* $out/lib/rotki-electron/
+            
+            # Create wrapper script
+            mkdir -p $out/bin
+            makeWrapper ${pkgs.electron}/bin/electron $out/bin/rotki \
+              --add-flags "$out/lib/rotki-electron" \
+              --set ELECTRON_IS_DEV 0
           '';
           
           meta = with pkgs.lib; {
-            description = "Rotki frontend - Vue.js/TypeScript Electron application";
+            description = "Rotki Electron desktop application";
+            homepage = "https://rotki.com";
             license = licenses.agpl3Only;
-            maintainers = [ ];
+            platforms = platforms.linux ++ platforms.darwin;
           };
         };
 
-        # Complete Rotki package
-        rotki = pkgs.stdenv.mkDerivation rec {
-          pname = "rotki";
-          version = "1.39.1";
+        # Main Rotki package - combines backend, frontend, and Colibri
+        rotki = pkgs.writeShellScriptBin "rotki" ''
+          set -e
           
-          src = ./.;
-          
-          buildInputs = [
-            rotkehlchen-backend
+          # Check if we're in the right directory for development mode
+          if [ -f "rotkehlchen/__main__.py" ]; then
+            echo "🔧 Development mode detected"
+            
+            # Set up environment
+            export PYTHONPATH="${toString ./.}:$PYTHONPATH"
+            export PATH="${pkgs.lib.makeBinPath [ colibri pkgs.uv ]}:$PATH"
+            
+            # Check if .venv exists and create/sync if needed
+            if [ ! -d ".venv" ]; then
+              echo "🔧 Setting up Python virtual environment..."
+              ${pkgs.uv}/bin/uv venv --python ${rotki-python-env}/bin/python
+            fi
+            
+            # Always sync dependencies to ensure they're up to date
+            echo "📦 Installing/updating Python dependencies..."
+            ${pkgs.uv}/bin/uv sync --frozen
+            
+            echo "🚀 Starting Rotki in development mode..."
+            echo "   Use 'cd frontend && pnpm dev' for the full app"
+            echo "   Backend: .venv/bin/python"
+            echo "   Colibri: ${colibri}/bin/colibri"
+            echo ""
+            
+            # Run rotki backend
+            exec .venv/bin/python -m rotkehlchen "$@"
+          else
+            echo "🚀 Starting Rotki Electron App..."
+            echo "   Colibri: ${colibri}/bin/colibri"
+            echo ""
+            
+            # Start Colibri in background
+            ${colibri}/bin/colibri --database ~/.rotki/global.db --port 4343 &
+            COLIBRI_PID=$!
+            
+            # Cleanup function
+            cleanup() {
+              echo "Shutting down Colibri..."
+              kill $COLIBRI_PID 2>/dev/null || true
+            }
+            trap cleanup EXIT
+            
+            # Run the Electron app
+            exec ${rotki-electron}/bin/rotki "$@"
+          fi
+        '';
+
+        # Development shell
+        devShell = pkgs.mkShell {
+          buildInputs = with pkgs; [
+            rotki-python-env
+            uv
+            rustToolchain
+            cargo
+            nodejs_22
+            pnpm
+            sqlite
+            openssl
+            libffi
+            pkg-config
+            git
+            gnumake
+            cairo
+            pango
+            libpng
+            libjpeg
+            giflib
+            librsvg
+            pixman
+            electron
+            gcc
+            glibc
             colibri
-            rotki-frontend
           ];
           
-          installPhase = ''
-            mkdir -p $out/bin
-            mkdir -p $out/lib/rotki
+          shellHook = ''
+            echo "🚀 Welcome to Rotki development environment!"
+            echo ""
+            echo "📦 Available tools:"
+            echo "  Python: $(python --version)"
+            echo "  UV: $(uv --version)"
+            echo "  Rust: $(rustc --version)"
+            echo "  Node.js: $(node --version)"
+            echo "  pnpm: $(pnpm --version)"
+            echo "  Colibri: ${colibri}/bin/colibri"
+            echo ""
+            echo "🛠️  Quick start:"
+            echo "  nix run                     - Run Rotki (after installing deps)"
+            echo "  uv sync                     - Install Python dependencies"
+            echo "  pnpm install                - Install frontend dependencies"
+            echo "  pnpm dev                    - Start full development environment"
+            echo "  cd colibri && cargo build   - Build Colibri service"
+            echo ""
+            echo "📚 More commands in CLAUDE.md"
+            echo ""
             
-            # Install backend
-            cp -r ${rotkehlchen-backend}/lib/python*/site-packages/rotkehlchen $out/lib/rotki/
+            # Set up environment variables
+            export PYTHONPATH="${toString ./.}:$PYTHONPATH"
+            export RUST_SRC_PATH="${rustToolchain}/lib/rustlib/src/rust/src"
+            export PATH="${colibri}/bin:$PATH"
             
-            # Install colibri service
-            cp ${colibri}/bin/colibri $out/bin/
+            # Library paths for native dependencies
+            export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath (with pkgs; [ 
+              openssl sqlite libffi stdenv.cc.cc cairo pango libpng libjpeg giflib librsvg pixman
+            ])}:$LD_LIBRARY_PATH"
             
-            # Install frontend
-            cp -r ${rotki-frontend}/* $out/lib/rotki/frontend/
+            # PKG_CONFIG_PATH for native modules
+            export PKG_CONFIG_PATH="${pkgs.lib.makeSearchPathOutput "dev" "lib/pkgconfig" (with pkgs; [
+              cairo pango libpng libjpeg giflib librsvg pixman openssl sqlite libffi
+            ])}:$PKG_CONFIG_PATH"
             
-            # Create wrapper script
-            cat > $out/bin/rotki << 'EOF'
-            #!/bin/bash
-            export PYTHONPATH="$out/lib/rotki:$PYTHONPATH"
-            exec ${python}/bin/python -m rotkehlchen "$@"
-            EOF
-            chmod +x $out/bin/rotki
+            echo "✅ Environment ready! Try 'nix run' to start Rotki"
           '';
-          
-          meta = with pkgs.lib; {
-            description = "A privacy-focused crypto portfolio management and tax reporting application";
-            homepage = "https://rotki.com";
-            license = licenses.agpl3Only;
-            maintainers = [ ];
-            platforms = platforms.linux ++ platforms.darwin;
-          };
         };
 
       in
@@ -218,20 +329,17 @@
         packages = {
           default = rotki;
           rotki = rotki;
-          rotkehlchen-backend = rotkehlchen-backend;
+          rotki-electron = rotki-electron;
           colibri = colibri;
-          rotki-frontend = rotki-frontend;
         };
 
         apps = {
           default = flake-utils.lib.mkApp {
             drv = rotki;
-            exePath = "/bin/rotki";
           };
           
           rotki = flake-utils.lib.mkApp {
             drv = rotki;
-            exePath = "/bin/rotki";
           };
           
           colibri = flake-utils.lib.mkApp {
@@ -240,75 +348,7 @@
           };
         };
 
-        devShells.default = pkgs.mkShell {
-          buildInputs = with pkgs; [
-            # Python development
-            python
-            pythonPackages.pip
-            pythonPackages.setuptools
-            pythonPackages.wheel
-            uv
-            
-            # Rust development
-            rustToolchain
-            cargo
-            
-            # Node.js development
-            nodejs
-            pnpm
-            
-            # System dependencies
-            sqlite
-            openssl
-            libffi
-            pkg-config
-            
-            # Development tools
-            git
-            gnumake
-            
-            # Frontend build dependencies
-            cairo
-            pango
-            libpng
-            libjpeg
-            giflib
-            librsvg
-            pixman
-            
-            # Optional: Electron for desktop development
-            electron
-          ];
-          
-          shellHook = ''
-            echo "🚀 Rotki development environment"
-            echo "📦 Python: $(python --version)"
-            echo "🦀 Rust: $(rustc --version)"
-            echo "📟 Node.js: $(node --version)"
-            echo "📦 pnpm: $(pnpm --version)"
-            echo ""
-            echo "Available commands:"
-            echo "  pnpm dev          - Start full development environment"
-            echo "  pnpm dev:web      - Start web-only development"
-            echo "  uv run python pytestgeventwrapper.py - Run backend tests"
-            echo "  cd frontend && pnpm run test:unit - Run frontend tests"
-            echo "  cd colibri && cargo build - Build Colibri service"
-            echo ""
-            echo "For more commands, see CLAUDE.md"
-          '';
-          
-          # Environment variables
-          PYTHONPATH = "${toString ./.}:$PYTHONPATH";
-          RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/src";
-          
-          # Required for some Python packages
-          LD_LIBRARY_PATH = "${pkgs.lib.makeLibraryPath (with pkgs; [ 
-            openssl
-            sqlite
-            libffi
-            stdenv.cc.cc
-          ])}:$LD_LIBRARY_PATH";
-        };
+        devShells.default = devShell;
       }
     );
 }

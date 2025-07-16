@@ -56,16 +56,18 @@
 
           src = ./colibri;
 
-# tests currently try to create a database on a parent dir
-# I can't seem to get around this, previously tried with:
-#   src = ./.
-#   cargoRoot = "./colibri";
-# in order to mount the whole repo, but this was running into issues I couldn't figure out
-
+          # tests currently try to create a database on a parent dir
+          # I can't seem to get around this, previously tried with:
+          #   src = ./.
+          #   cargoRoot = "./colibri";
+          # in order to mount the whole repo, but this was running into issues I couldn't figure out
           doCheck = false;
 
           buildInputs = with pkgs; [ openssl ];
-          nativeBuildInputs = with pkgs; [ pkg-config perl ];
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+            perl
+          ];
 
           cargoDeps = rustPlatform.fetchCargoVendor {
             inherit (finalAttrs)
@@ -76,8 +78,7 @@
             hash = "sha256-CktDDoDkuJYKyTtNWTQPSz2Dpi8HeQZ11blZqjU6P40=";
           };
 
-          patchPhase = ''
-          '';
+          patchPhase = '''';
 
           installPhase = ''
             mkdir -p $out/bin
